@@ -1,0 +1,133 @@
+#!/bin/bash
+
+# mythtranscode-ng %JOBID% %CHANID% %STARTTIME%
+
+timeout=60
+vencopts="-vcodec libx264 -vpre medium -bufsize 25000000 -maxrate 20000000 -level 40 -crf 15"
+aencopts="-acodec libmp3lame -ab 128k"
+
+logtimeRE="[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}"
+
+. /usr/local/lib/mythjoblib.sh
+
+checkdb
+checkjob
+findfile
+
+function cleanup {
+	[ -n "${mtpid}" ] && kill -9 "${mtpid}" 2>/dev/null
+	[ -n "${fifodir}" -a -d "${fifodir}" ] && rm -rf "${fifodir}"
+	[ -n "${cleanfile}" -a -f "${dir}/${cleanfile}" ] && rm -f "${dir}/${cleanfile}"
+}
+
+trap cleanup EXIT
+
+profile="$(myexec "SELECT b.name FROM recorded AS a LEFT JOIN recordingprofiles AS b ON a.transcoder = b.id WHERE a.chanid = ${chanid} AND a.starttime = '${starttime}'")"
+
+case "${profile}" in
+4:3)
+	resize="-s 640x480"
+	;;
+16:9)
+	resize="-s 640x360"
+	;;
+letterbox)
+	resize="-s 640x360"
+	crop="-croptop 90 -cropbottom 90 -cropleft 8 -cropright 8"
+	;;
+pillarbox-3:2)
+	resize="-s 640x426"
+	crop="-cropleft 40 -cropright 40"
+	;;
+esac
+
+fifodir=$(mktemp --directory --tmpdir mythtranscode.XXXX)
+mtlog="${fifodir}/mythtranscode.log"
+fflog="${fifodir}/ffmpeg.log"
+
+mythtranscode --fifodir "${fifodir}" -v general --chanid "${chanid}" --starttime "${starttime}" --honorcutlist > "${mtlog}" &
+mtpid=$!
+
+now=$(date +%s)
+maxdt=$((${now}+${timeout}))
+
+while [ ${now} -lt ${maxdt} ]
+do
+	vidspec="$(grep -E "^${logtimeRE} Video [0-9]+x[0-9]+@[0-9]+fps Audio rate: [0-9]+$" "${mtlog}")"
+	[ -n "${vidspec}" ] && break
+	sleep 1
+done
+
+[ -n "${vidspec}" ] || die 1 "Timeout wating for mythtranscode"
+
+eval $(echo "${vidspec}" | sed -r "s/^${logtimeRE} Video ([0-9]+)x([0-9]+)@([0-9]+)fps Audio rate: ([0-9]+)$/width=\1 height=\2 fps=\3 ar=\4/")
+
+cutlist="$(grep -E "^${logtimeRE} Cutlist *:" "${mtlog}" | sed -e "s/.* Cutlist *: //" -e "s/,/ /g")"
+[ "${cutlist}" = "Is Empty" ] && cutlist=
+frames="$(grep -E "^${logtimeRE} Original Length:" "${mtlog}" | sed "s/.* Length: \([0-9]*\) frames/\1/")"
+
+newframes=${frames}
+for cut in ${cutlist}
+do
+	start=${cut%-*}
+	start=${start:-0}
+	end=${cut#*-}
+	end=${end:-${frames}}
+	newframes=$((${newframes}-(${end}-${start})))
+done
+
+vinopts="-f rawvideo -s ${width}x${height} -r ${fps}"
+ainopts="-f s16le -ac 2 -ar ${ar}"
+
+newfile="${file/%.nuv}"
+newfile="${newfile/%.mpg}.mkv"
+cleanfile="${newfile}"
+
+touch "${fflog}"
+while true
+do
+	[ -f "${fflog}" ] || break
+	line="$(tr '\r' '\n' < "${fflog}" 2>/dev/null | tail -n 2)"
+	if [ -n "${line}" ]
+	then
+		now=$(date +%s)
+		[ -n "${startdt}" ] || startdt=${now}
+		eval $(echo ${line} | sed -r "s/^frame= *([0-9]+) .* avg_br= *([^ ]+) .*$/curframe=\1 br=\2/")
+		[ ${now} -eq ${startdt} ] && startframe=${curframe}
+		[ ${now} -eq ${startdt} ] || fps=$(((${curframe}-${startframe})/(${now}-${startdt})))
+		fps=${fps:-0}
+		#[ ${now} -eq ${startdt} ] || eta=$(((${now}-${startdt})*${newframes}/(${curframe}-${startframe})))
+		[ ${now} -eq ${startdt} -o ${curframe} -eq ${startframe} ] || eta=$(( (${now}-${startdt}) * ${newframes} / (${curframe}-${startframe}) - (${now}-${startdt}) ))
+		if [ -n "${eta}" ]
+		then
+			eta_s=$((${eta}%60))
+			eta=$((${eta}/60))
+			eta_m=$((${eta}%60))
+			eta=$((${eta}/60))
+			eta_h=$((${eta}%24))
+			eta_d=$((${eta}/24))
+			eta=
+			[ ${eta_d} -gt 0 ] && eta="${eta_d}d "
+			[ ${eta_h} -gt 0 -o -n "${eta}" ] && eta="${eta}${eta_h}h "
+			[ ${eta_m} -gt 0 -o -n "${eta}" ] && eta="${eta}${eta_m}m "
+			[ ${eta_s} -gt 0 -o -n "${eta}" ] && eta="${eta}${eta_s}s "
+			eta=$(echo ${eta})
+		else
+			eta="unknown"
+		fi
+		$log "Transcode in progress: $((${curframe}*100/${newframes}))% ETA: ${eta} (${fps}fps) (${br})"
+	fi
+	sleep 5
+done &
+
+ffmpeg -y -vstats_file "${fflog}" ${vinopts} -i "${fifodir}/vidout" ${ainopts} -i "${fifodir}/audout" ${crop} -deinterlace ${resize} -f matroska ${vencopts} ${aencopts} "${dir}/${newfile}" 2>/dev/null || die 2 "Error while transcoding"
+
+newsize=$(filesize "${dir}/${newfile}")
+
+myexec "UPDATE recorded SET basename='${newfile}',filesize='${newsize}',transcoded=1,cutlist=0 WHERE chanid=${chanid} AND starttime='${starttime}'" || die 3 "Error registering the transcoded file"
+unset cleanfile
+myexec "DELETE FROM recordedseek WHERE chanid=${chanid} AND starttime='${starttime}'" || true
+myexec "DELETE FROM recordedmarkup WHERE chanid=${chanid} AND starttime='${starttime}'" || true
+
+rm -f "${dir}/${file}.png" "${dir}/${file}.*.png"
+#ln -s "${newfile}.png" "${dir}/${file}.png"

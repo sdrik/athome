@@ -1,0 +1,49 @@
+#!/bin/bash
+
+# mythmove %JOBID% %CHANID% %STARTTIME% BACKEND
+
+. /usr/local/lib/mythjoblib.sh
+
+backend="$1"
+shift
+
+checkdb
+checkjob
+
+[ "${hostname}" = "${backend}" ] && die 3 "Cannot move to myself !!"
+
+which klist	>/dev/null || die 1 "Missing command : klist"
+which kinit	>/dev/null || die 1 "Missing command : kinit"
+which ssh	>/dev/null || die 1 "Missing command : ssh"
+which scp	>/dev/null || die 1 "Missing command : scp"
+which md5sum	>/dev/null || die 1 "Missing command : md5sum"
+
+findfile
+
+klist -t || kinit -t ${HOME}/.krb5.keytab || die 1 "Cannot start kerberos"
+ssh ${backend} true || die 1 "Cannot log into ${backend}"
+
+filesize=$(stat -c %s "${dir}/${file}")
+found=
+while read destdir
+do
+	freespace=$(eval echo $(ssh ${backend} "stat -f -c '\$((%a*%S))' \"${destdir}\""))
+	[ ${filesize} -lt ${freespace} ] || continue
+	found=yes
+	break
+done <<EOF
+$(myexec "SELECT dirname FROM storagegroup WHERE hostname='${backend}' AND groupname='${storagegroup}'")
+EOF
+
+[ -n "${found}" ] || die 4 "No destination dir found on ${backend}"
+
+$log "Copying file..."
+scp "${dir}/${file}" ${backend}:"${destdir}" || die 5 "File copy failed"
+
+$log "Verifying file..."
+(cd "${dir}" && md5sum "${file}") | ssh ${backend} "cd \"${destdir}\" && md5sum -c --status" || die 5 "Copied file do not match original file"
+
+myexec "UPDATE recorded SET hostname='${backend}' WHERE chanid='${chanid}' AND starttime='${starttime}'" || die 5 "Update of record failed"
+rm -f "${dir}/${file}" "${dir}/${file}.png" "${dir}/${file}.*.png" "${dir}/${file}.old"
+
+$log "Record moved to ${backend}"
