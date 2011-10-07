@@ -2,10 +2,16 @@
 
 umask 0007
 
-counter=/var/local/safeshutdown/counter
+idle=300
+basedir=/var/local/safeshutdown
+counter=$basedir/counter
+timer=$basedir/timer
 
 status=0
 cur=0
+left=0
+
+[ -f $timer ] && left=$(($idle-$(date +%s)+$(stat -c %Y $timer)))
 
 lockfile-create $counter
 
@@ -26,10 +32,17 @@ clear)
 	;;
 
 print)
-	echo $cur
+	echo "counter: $cur"
+	echo -n "timer: "
+	if [ $left -le 0 ]
+	then
+		echo "expired"
+	else
+		echo "$left"
+	fi
 	;;
 *)
-	[ $cur -eq 0 ]
+	[ $cur -eq 0 -a $left -le 0 ]
 	status=$?
 
 esac
