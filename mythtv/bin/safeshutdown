@@ -1,0 +1,38 @@
+#!/bin/bash
+
+umask 0007
+
+counter=/var/local/safeshutdown/counter
+
+status=0
+cur=0
+
+lockfile-create $counter
+
+[ -f $counter ] && cur=$(cat $counter)
+
+case "$1" in
+
+lock)
+	echo "$(($cur+1))" > $counter
+	;;
+
+unlock)
+	[ $cur -gt 0 ] && echo "$(($cur-1))" > $counter
+	;;
+
+clear)
+	rm -f $counter
+	;;
+
+print)
+	echo $cur
+	;;
+*)
+	[ $cur -eq 0 ]
+	status=$?
+
+esac
+
+lockfile-remove $counter
+exit $status
