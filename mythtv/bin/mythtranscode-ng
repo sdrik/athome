@@ -96,7 +96,6 @@ do
 		[ ${now} -eq ${startdt} ] && startframe=${curframe}
 		[ ${now} -eq ${startdt} ] || fps=$(((${curframe}-${startframe})/(${now}-${startdt})))
 		fps=${fps:-0}
-		#[ ${now} -eq ${startdt} ] || eta=$(((${now}-${startdt})*${newframes}/(${curframe}-${startframe})))
 		[ ${now} -eq ${startdt} -o ${curframe} -eq ${startframe} ] || eta=$(( (${now}-${startdt}) * ${newframes} / (${curframe}-${startframe}) - (${now}-${startdt}) ))
 		if [ -n "${eta}" ]
 		then
@@ -126,8 +125,8 @@ newsize=$(filesize "${dir}/${newfile}")
 
 myexec "UPDATE recorded SET basename='${newfile}',filesize='${newsize}',transcoded=1,cutlist=0 WHERE chanid=${chanid} AND starttime='${starttime}'" || die 3 "Error registering the transcoded file"
 unset cleanfile
+myexec "UPDATE recorded AS a INNER JOIN recordedprogram AS b ON b.chanid=a.chanid AND b.starttime=a.progstart AND b.endtime=a.progend SET a.endtime=ADDTIME(a.starttime,SEC_TO_TIME($newframes/$fps)),a.progstart=a.starttime,a.progend=ADDTIME(a.starttime,SEC_TO_TIME($newframes/$fps)),b.starttime=a.starttime,b.endtime=ADDTIME(a.starttime,SEC_TO_TIME($newframes/$fps)) WHERE a.chanid=${chanid} AND a.starttime='${starttime}'" || true
 myexec "DELETE FROM recordedseek WHERE chanid=${chanid} AND starttime='${starttime}'" || true
 myexec "DELETE FROM recordedmarkup WHERE chanid=${chanid} AND starttime='${starttime}'" || true
 
-rm -f "${dir}/${file}.png" "${dir}/${file}.*.png"
-#ln -s "${newfile}.png" "${dir}/${file}.png"
+rm -f "${dir}/${file}.png" "${dir}/${file}.*.png" "${dir}/${newfile}.png" "${dir}/${newfile}.*.png"
