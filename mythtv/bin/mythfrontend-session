@@ -1,0 +1,19 @@
+#!/bin/bash
+
+/usr/bin/klist -t || /usr/bin/kinit -t /home/public/.krb5.keytab
+/usr/bin/killall irexec 2>/dev/null
+/usr/bin/irexec &
+
+/usr/bin/xsetroot -solid black
+/usr/bin/xset -dpms
+/usr/bin/xset s off
+
+/usr/bin/x11vnc -q -forever -nopw -allow localhost -listen localhost &
+
+/usr/bin/ratpoison &
+/usr/bin/unclutter -root -not mythbrowser &
+
+while /bin/true
+do
+	/usr/bin/mythfrontend -d 2>&1 | /usr/bin/logger -t mythfrontend -p local0.info
+done
