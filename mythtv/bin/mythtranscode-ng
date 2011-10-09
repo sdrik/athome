@@ -128,5 +128,5 @@ unset cleanfile
 myexec "UPDATE recorded AS a INNER JOIN recordedprogram AS b ON b.chanid=a.chanid AND b.starttime=a.progstart AND b.endtime=a.progend SET a.endtime=ADDTIME(a.starttime,SEC_TO_TIME($newframes/$fps)),a.progstart=a.starttime,a.progend=ADDTIME(a.starttime,SEC_TO_TIME($newframes/$fps)),b.starttime=a.starttime,b.endtime=ADDTIME(a.starttime,SEC_TO_TIME($newframes/$fps)) WHERE a.chanid=${chanid} AND a.starttime='${starttime}'" || true
 myexec "DELETE FROM recordedseek WHERE chanid=${chanid} AND starttime='${starttime}'" || true
 myexec "DELETE FROM recordedmarkup WHERE chanid=${chanid} AND starttime='${starttime}'" || true
-
+mv "${dir}/${file}" "${dir}/${file}.old"
 rm -f "${dir}/${file}.png" "${dir}/${file}.*.png" "${dir}/${newfile}.png" "${dir}/${newfile}.*.png"
